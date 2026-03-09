@@ -7,7 +7,7 @@ from urllib.parse import urlencode
 
 from django.contrib import messages
 from django.conf import settings
-from django.http import HttpRequest, HttpResponse, StreamingHttpResponse
+from django.http import HttpRequest, HttpResponse, JsonResponse, StreamingHttpResponse
 from django.shortcuts import redirect, render
 from django.urls import reverse
 
@@ -20,7 +20,7 @@ from .forms import (
     PortActionForm,
     PortListFilterForm,
 )
-from .models import AMPConnectionConfig, DiscoveredInstance, FirewallProviderConfig
+from .models import AMPConnectionConfig, DiscoveredInstance, DiscoveredPort, FirewallProviderConfig
 from .services.amp_ports import AMPPortCollector, InstancePort, InstancePorts, test_amp_connection
 from .services.snapshot_sync import sync_discovered_data
 
@@ -166,20 +166,17 @@ def index(request: HttpRequest) -> HttpResponse:
                 instance_friendly_name=inst.friendly_name,
                 description=port.description or port.name,
             )
-            if provider is not None and provider.provider_id == "openwrt":
-                status_result = provider.get_status(target=target)
-                status_value = status_result.status.value
-                status_message = status_result.message
-            elif port.listening is False:
-                status_value = FirewallPortStatus.UNKNOWN.value
-                status_message = "Service is not listening on this port."
-            elif provider is None:
+            if provider is None:
                 status_value = FirewallPortStatus.UNKNOWN.value
                 status_message = "No configured localhost provider is available."
             else:
                 status_result = provider.get_status(target=target)
                 status_value = status_result.status.value
                 status_message = status_result.message
+                if port.listening is False:
+                    if status_value == FirewallPortStatus.OPEN.value:
+                        status_value = "Open/Service not listening"
+                    status_message = f"{status_message} Service is not listening on this port."
 
             if active_only and status_value != FirewallPortStatus.OPEN.value:
                 continue
@@ -298,6 +295,12 @@ def sync_progress(request: HttpRequest) -> StreamingHttpResponse:
 
 
 def apply_port_action(request: HttpRequest) -> HttpResponse:
+    wants_json = (
+        request.headers.get("x-requested-with") == "XMLHttpRequest"
+        or "application/json" in request.headers.get("accept", "").lower()
+        or _truthy(request.POST.get("response_json"))
+    )
+
     def _redirect_back() -> HttpResponse:
         url = reverse("ports-index")
         qs = _build_return_query_from_source(request.POST)
@@ -306,11 +309,16 @@ def apply_port_action(request: HttpRequest) -> HttpResponse:
         return redirect(url)
 
     if request.method != "POST":
+        if wants_json:
+            return JsonResponse({"success": False, "message": "POST required."}, status=405)
         return redirect("ports-index")
 
     form = PortActionForm(request.POST)
     if not form.is_valid():
-        messages.error(request, f"Invalid action request: {form.errors.as_text()}")
+        msg = f"Invalid action request: {form.errors.as_text()}"
+        if wants_json:
+            return JsonResponse({"success": False, "message": msg}, status=400)
+        messages.error(request, msg)
         return _redirect_back()
 
     provider_id = str(form.cleaned_data["provider_id"])
@@ -329,13 +337,52 @@ def apply_port_action(request: HttpRequest) -> HttpResponse:
         provider = get_provider(provider_id, require_available=True)
         result = provider.apply(action=action, target=target)
     except Exception as exc:
-        messages.error(request, f"Provider error: {exc}")
+        msg = f"Provider error: {exc}"
+        if wants_json:
+            return JsonResponse({"success": False, "message": msg}, status=500)
+        messages.error(request, msg)
         return _redirect_back()
 
     command_text = " ".join(result.command) if result.command else ""
     detail = f"{result.message}"
     if command_text:
         detail = f"{detail} | command: {command_text}"
+
+    if wants_json:
+        status_value = FirewallPortStatus.UNKNOWN.value
+        status_message = result.message
+        if result.success:
+            try:
+                status_result = provider.get_status(target=target)
+                status_value = status_result.status.value
+                status_message = status_result.message
+            except Exception as exc:
+                status_message = f"Action applied, but status refresh failed: {exc}"
+            try:
+                discovered_port = (
+                    DiscoveredPort.objects.select_related("instance")
+                    .filter(
+                        instance__instance_name=target.instance_name,
+                        port=target.port,
+                        protocol_name__iexact=target.protocol,
+                    )
+                    .first()
+                )
+                if discovered_port is not None and discovered_port.listening is False:
+                    if status_value == FirewallPortStatus.OPEN.value:
+                        status_value = "Open/Service not listening"
+                    if "Service is not listening on this port." not in status_message:
+                        status_message = f"{status_message} Service is not listening on this port."
+            except Exception:
+                pass
+        return JsonResponse(
+            {
+                "success": bool(result.success),
+                "message": detail,
+                "status": status_value,
+                "status_message": status_message,
+            }
+        )
 
     if result.success:
         messages.success(request, detail)

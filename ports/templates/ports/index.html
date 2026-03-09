@@ -267,10 +267,10 @@
                   <div class="muted">{{ item.port.description }}</div>
                 </td>
                 <td>
-                  <div class="{% if item.status == 'Open' %}status-open{% elif item.status == 'Disabled' %}status-disabled{% elif item.status == 'Closed' %}status-closed{% else %}status-unknown{% endif %}">
+                  <div class="row-status-label {% if item.status == 'Open' %}status-open{% elif item.status == 'Open/Service not listening' %}status-disabled{% elif item.status == 'Disabled' %}status-disabled{% elif item.status == 'Closed' %}status-closed{% else %}status-unknown{% endif %}">
                     {{ item.status }}
                   </div>
-                  <div class="muted">{{ item.status_message }}</div>
+                  <div class="muted row-status-message">{{ item.status_message }}</div>
                 </td>
                 <td>
                   <div>required={{ item.port.required }}</div>
@@ -284,7 +284,7 @@
                 </td>
                 <td>
                   <div class="actions">
-                    <form method="post" action="{% url 'ports-apply' %}">
+                    <form method="post" action="{% url 'ports-apply' %}" class="row-action-form">
                       {% csrf_token %}
                       <input type="hidden" name="provider_id" value="{{ selected_provider_id }}">
                       <input type="hidden" name="action" value="enable">
@@ -293,6 +293,7 @@
                       <input type="hidden" name="port" value="{{ item.port.port }}">
                       <input type="hidden" name="protocol" value="{{ item.port.protocol_name }}">
                       <input type="hidden" name="description" value="{{ item.port.description|default:item.port.name }}">
+                      <input type="hidden" name="response_json" value="1">
                       <input type="hidden" name="return_provider_id" value="{{ selected_provider_id }}">
                       <input type="hidden" name="return_include_ads" value="{% if filter_form.include_ads.value %}1{% else %}0{% endif %}">
                       <input type="hidden" name="return_active_only" value="{% if selected_active_only %}1{% else %}0{% endif %}">
@@ -300,7 +301,7 @@
                       <input type="hidden" name="return_filter_query" value="{{ selected_filter_query }}">
                       <button class="enable" type="submit" {% if not selected_provider_id %}disabled{% endif %}>Enable</button>
                     </form>
-                    <form method="post" action="{% url 'ports-apply' %}">
+                    <form method="post" action="{% url 'ports-apply' %}" class="row-action-form">
                       {% csrf_token %}
                       <input type="hidden" name="provider_id" value="{{ selected_provider_id }}">
                       <input type="hidden" name="action" value="disable">
@@ -309,6 +310,7 @@
                       <input type="hidden" name="port" value="{{ item.port.port }}">
                       <input type="hidden" name="protocol" value="{{ item.port.protocol_name }}">
                       <input type="hidden" name="description" value="{{ item.port.description|default:item.port.name }}">
+                      <input type="hidden" name="response_json" value="1">
                       <input type="hidden" name="return_provider_id" value="{{ selected_provider_id }}">
                       <input type="hidden" name="return_include_ads" value="{% if filter_form.include_ads.value %}1{% else %}0{% endif %}">
                       <input type="hidden" name="return_active_only" value="{% if selected_active_only %}1{% else %}0{% endif %}">
@@ -582,6 +584,81 @@
 
         return true;
       }
+
+      function statusClassFor(status) {
+        if (status === "Open") return "status-open";
+        if (status === "Open/Service not listening") return "status-disabled";
+        if (status === "Disabled") return "status-disabled";
+        if (status === "Closed") return "status-closed";
+        return "status-unknown";
+      }
+
+      async function submitRowAction(form, button) {
+        const actionUrl = form.getAttribute("action") || window.location.pathname;
+        const payload = new FormData(form);
+        const requestedAction = String(payload.get("action") || "").toLowerCase();
+        const row = form.closest("tr");
+        const labelEl = row ? row.querySelector(".row-status-label") : null;
+        const msgEl = row ? row.querySelector(".row-status-message") : null;
+        const buttons = Array.from(form.querySelectorAll("button"));
+        buttons.forEach((b) => { b.disabled = true; });
+        if (button) button.textContent = "Working...";
+
+        try {
+          const response = await fetch(actionUrl, {
+            method: "POST",
+            body: payload,
+            headers: {
+              "X-Requested-With": "XMLHttpRequest",
+              "Accept": "application/json",
+            },
+          });
+          const raw = await response.text();
+          let data = {};
+          try {
+            data = JSON.parse(raw);
+          } catch (_err) {
+            const preview = (raw || "").replace(/\\s+/g, " ").trim().slice(0, 160);
+            throw new Error(preview || "Server returned a non-JSON response.");
+          }
+          if (!response.ok || !data.success) {
+            throw new Error(data.message || "Action failed.");
+          }
+
+          const effectiveStatus =
+            requestedAction === "enable"
+              ? (String(data.status_message || "").includes("Service is not listening on this port.")
+                ? "Open/Service not listening"
+                : "Open")
+              : requestedAction === "disable"
+                ? "Closed"
+                : String(data.status || "Unknown");
+
+          if (labelEl) {
+            labelEl.textContent = effectiveStatus;
+            labelEl.classList.remove("status-open", "status-disabled", "status-closed", "status-unknown");
+            labelEl.classList.add(statusClassFor(effectiveStatus));
+          }
+          if (msgEl) {
+            msgEl.textContent = String(data.status_message || data.message || "Updated.");
+          }
+        } catch (error) {
+          alert(error instanceof Error ? error.message : "Action failed.");
+        } finally {
+          buttons.forEach((b) => { b.disabled = false; });
+          if (button) {
+            button.textContent = button.classList.contains("disable") ? "Disable" : "Enable";
+          }
+        }
+      }
+
+      const rowActionForms = Array.from(document.querySelectorAll(".row-action-form"));
+      rowActionForms.forEach((form) => {
+        form.addEventListener("submit", (event) => {
+          event.preventDefault();
+          submitRowAction(form, event.submitter || form.querySelector("button"));
+        });
+      });
 
       if (filtersForm) {
         filtersForm.addEventListener("submit", (event) => {
