@@ -1,6 +1,8 @@
 import os
 from pathlib import Path
 
+from django.core.management.utils import get_random_secret_key
+
 
 def _load_dotenv(path: Path) -> None:
     if not path.exists():
@@ -17,7 +19,27 @@ def _load_dotenv(path: Path) -> None:
 BASE_DIR = Path(__file__).resolve().parent.parent
 _load_dotenv(BASE_DIR / ".env")
 
-SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "dev-only-secret-key-change-me")
+def _resolve_secret_key() -> str:
+    from_env = str(os.getenv("DJANGO_SECRET_KEY", "")).strip()
+    if from_env:
+        return from_env
+
+    key_file = BASE_DIR / ".django_secret_key"
+    if key_file.exists():
+        value = key_file.read_text(encoding="utf-8").strip()
+        if value:
+            return value
+
+    value = get_random_secret_key()
+    key_file.write_text(f"{value}\n", encoding="utf-8")
+    try:
+        os.chmod(key_file, 0o600)
+    except OSError:
+        pass
+    return value
+
+
+SECRET_KEY = _resolve_secret_key()
 DEBUG = os.getenv("DJANGO_DEBUG", "1") == "1"
 ALLOWED_HOSTS = [h.strip() for h in os.getenv("DJANGO_ALLOWED_HOSTS", "*").split(",") if h.strip()]
 
