@@ -2,6 +2,11 @@
 
 Django web UI for discovering AMP instance ports and managing firewall rules through pluggable providers.
 
+## Intended Deployment
+
+- This service is intended to run on the same host machine where AMP is running.
+- Local providers (`iptables`, `ufw`) execute commands on the local host, so running remotely will not manage the AMP host firewall unless you use a remote provider (for example OpenWrt RPC).
+
 ## What It Does
 
 - Reads instance + port data from AMP.
@@ -14,6 +19,30 @@ Django web UI for discovering AMP instance ports and managing firewall rules thr
 
 ```bash
 ./install.sh
+```
+
+## Sudo Requirements (iptables/ufw)
+
+Local firewall providers call commands through `sudo -n`, so the runtime user must have passwordless sudo for those binaries.
+
+1. Find the runtime user (the account running `run-ports-web.sh` / Django).
+2. Create a sudoers file using `visudo`:
+
+```bash
+sudo visudo -f /etc/sudoers.d/amp-firewall-web
+```
+
+3. Add rules (replace `AMPWEBUSER` with your runtime user):
+
+```sudoers
+AMPWEBUSER ALL=(root) NOPASSWD: /usr/sbin/iptables
+AMPWEBUSER ALL=(root) NOPASSWD: /usr/sbin/ufw
+```
+
+4. Ensure file permissions are correct:
+
+```bash
+sudo chmod 440 /etc/sudoers.d/amp-firewall-web
 ```
 
 ## Run
