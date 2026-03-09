@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Provider Configuration</title>
+  <style>
+    body { margin:0; font-family:"Segoe UI","Noto Sans",sans-serif; background:#f6f8fa; color:#1f2328; }
+    .container { max-width: 1000px; margin:1rem auto 2rem; padding:0 1rem; }
+    .panel { background:#fff; border:1px solid #d0d7de; border-radius:10px; padding:.9rem; margin-bottom:1rem; }
+    .row { border-top:1px solid #d0d7de; padding:.8rem 0; }
+    .row:first-child { border-top:none; }
+    .meta { color:#57606a; font-size:.92rem; }
+    input[type=text], input[type=password], select { width:100%; max-width:520px; padding:.35rem .45rem; }
+    .field { margin:.45rem 0; }
+    .field label { display:block; font-size:.9rem; color:#57606a; margin-bottom:.15rem; }
+    .ok { color:#1a7f37; }
+    .bad { color:#cf222e; }
+    .messages { list-style:none; padding:0; margin:0 0 1rem; }
+    .messages li { padding:.6rem .8rem; border-radius:8px; margin-bottom:.4rem; }
+    .messages .success { background:#dafbe1; color:#1a7f37; }
+    .messages .error { background:#ffebe9; color:#cf222e; }
+    .messages .warning { background:#fff8c5; color:#9a6700; }
+    .messages .info { background:#ddf4ff; color:#0969da; }
+    .actions { display:flex; gap:.6rem; align-items:center; margin-top:.6rem; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Firewall Provider Configuration</h1>
+    <p class="meta"><a href="{% url 'ports-index' %}">Back to port list</a></p>
+
+    {% if messages %}
+      <ul class="messages">
+        {% for message in messages %}
+          <li class="{{ message.tags }}">{{ message }}</li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+
+    <form method="post" class="panel">
+      {% csrf_token %}
+      <div class="row">
+        <h3>AMP Connection</h3>
+        <div class="meta">Used for collecting instances and ports from AMP.</div>
+        <div class="field">
+          <label for="amp-url">AMP URL</label>
+          <input id="amp-url" type="text" name="amp__url" value="{{ amp_fields.url }}" placeholder="http://127.0.0.1:8080">
+        </div>
+        <div class="field">
+          <label for="amp-username">AMP Username</label>
+          <input id="amp-username" type="text" name="amp__username" value="{{ amp_fields.username }}">
+        </div>
+        <div class="field">
+          <label for="amp-password">AMP Password {% if amp_fields.password_is_set %}(stored; leave blank to keep){% endif %}</label>
+          <input id="amp-password" type="password" name="amp__password" value="">
+        </div>
+      </div>
+
+      {% for row in rows %}
+        <div class="row">
+          <h3>{{ row.meta.display_name }} <span class="meta">({{ row.meta.provider_id }})</span></h3>
+          <div class="meta">localhost provider={{ row.meta.local_provider }}</div>
+          <div class="meta">configured={{ row.meta.configured }} | supported={{ row.meta.supported }} | in_use={{ row.meta.in_use }} | available={{ row.meta.available }}</div>
+          <div class="meta {% if row.meta.available %}ok{% else %}bad{% endif %}">{{ row.meta.reason }}</div>
+
+          {% if row.editable %}
+            <label>
+              <input type="checkbox" name="{{ row.meta.provider_id }}__enabled" {% if row.enabled %}checked{% endif %}>
+              Enabled
+            </label>
+
+            {% if row.meta.provider_id == "openwrt" %}
+              <div class="field">
+                <label for="openwrt-rpc-url">RPC URL</label>
+                <input id="openwrt-rpc-url" type="text" name="openwrt__rpc_url" value="{{ row.config_fields.rpc_url }}" placeholder="http://192.168.1.1/ubus">
+              </div>
+              <div class="field">
+                <label for="openwrt-username">Username</label>
+                <input id="openwrt-username" type="text" name="openwrt__username" value="{{ row.config_fields.username }}">
+              </div>
+              <div class="field">
+                <label for="openwrt-password">Password {% if row.config_fields.password_is_set %}(stored; leave blank to keep){% endif %}</label>
+                <input id="openwrt-password" type="password" name="openwrt__password" value="">
+              </div>
+              <div class="field">
+                <label for="openwrt-source-zone">Source zone (`rule` mode)</label>
+                <input id="openwrt-source-zone" type="text" name="openwrt__source_zone" value="{{ row.config_fields.source_zone }}">
+              </div>
+              <div class="field">
+                <label for="openwrt-forward-source-zone">Forward source zone (`redirect` mode)</label>
+                <input id="openwrt-forward-source-zone" type="text" name="openwrt__forward_source_zone" value="{{ row.config_fields.forward_source_zone }}">
+              </div>
+              <div class="field">
+                <label for="openwrt-forward-dest-zone">Forward destination zone (`redirect` mode)</label>
+                <input id="openwrt-forward-dest-zone" type="text" name="openwrt__forward_dest_zone" value="{{ row.config_fields.forward_dest_zone }}">
+              </div>
+              <div class="field">
+                <label for="openwrt-forward-dest-ip">Forward destination IP (`redirect` mode)</label>
+                <input id="openwrt-forward-dest-ip" type="text" name="openwrt__forward_dest_ip" value="{{ row.config_fields.forward_dest_ip }}">
+              </div>
+              <div class="field">
+                <label for="openwrt-manage-mode">Manage mode</label>
+                <select id="openwrt-manage-mode" name="openwrt__manage_mode">
+                  <option value="redirect" {% if row.config_fields.manage_mode == "redirect" %}selected{% endif %}>redirect</option>
+                  <option value="rule" {% if row.config_fields.manage_mode == "rule" %}selected{% endif %}>rule</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>
+                  <input type="checkbox" name="openwrt__aggressive_mode" {% if row.config_fields.aggressive_mode %}checked{% endif %}>
+                  Aggressive mode
+                </label>
+              </div>
+              <div class="field">
+                <label for="openwrt-name-prefix">Legacy name prefix</label>
+                <input id="openwrt-name-prefix" type="text" name="openwrt__name_prefix" value="{{ row.config_fields.name_prefix }}">
+              </div>
+              <div class="field">
+                <label for="openwrt-display-prefix">Display name prefix</label>
+                <input id="openwrt-display-prefix" type="text" name="openwrt__display_prefix" value="{{ row.config_fields.display_prefix }}">
+              </div>
+            {% else %}
+              <div class="meta">No editable fields implemented for this provider yet.</div>
+            {% endif %}
+          {% else %}
+            <div class="meta">Auto-detected localhost provider; no manual configuration required.</div>
+          {% endif %}
+        </div>
+      {% endfor %}
+
+      <div class="actions">
+        <button type="submit" name="form_action" value="save">Save configuration</button>
+        <button type="submit" name="form_action" value="test">Test connections</button>
+      </div>
+    </form>
+  </div>
+</body>
+</html>

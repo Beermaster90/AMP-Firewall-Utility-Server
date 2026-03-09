@@ -1,0 +1,438 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Instance Port Firewall Manager</title>
+  <style>
+    :root { --bg:#f6f8fa; --panel:#fff; --line:#d0d7de; --text:#1f2328; --muted:#57606a; --ok:#1a7f37; --err:#cf222e; --warn:#9a6700; }
+    body { margin:0; font-family: "Segoe UI", "Noto Sans", sans-serif; background:var(--bg); color:var(--text); }
+    .container { max-width: 1200px; margin: 1rem auto 2rem; padding: 0 1rem; }
+    h1 { margin: .5rem 0 1rem; font-size: 1.5rem; }
+    .panel { background:var(--panel); border:1px solid var(--line); border-radius: 10px; padding: .9rem; margin-bottom: 1rem; }
+    .filters { display:flex; flex-wrap:wrap; gap: .8rem 1.2rem; align-items: center; }
+    .bulk-actions { display:flex; gap:.6rem; align-items:center; margin-top:.7rem; }
+    .messages { list-style: none; padding: 0; margin: 0 0 1rem; }
+    .messages li { padding: .6rem .8rem; border-radius: 8px; margin-bottom: .4rem; }
+    .messages .success { background: #dafbe1; color: var(--ok); }
+    .messages .error { background: #ffebe9; color: var(--err); }
+    .messages .info { background: #ddf4ff; color: #0969da; }
+    .instance { margin-bottom: 1rem; }
+    .instance-head { display:flex; flex-wrap:wrap; gap:.5rem 1rem; align-items:center; margin-bottom:.6rem; }
+    .muted { color: var(--muted); font-size:.92rem; }
+    table { width:100%; border-collapse: collapse; font-size: .92rem; }
+    th, td { padding: .45rem .5rem; border-top: 1px solid var(--line); vertical-align: top; }
+    th { text-align:left; background:#f3f4f6; border-top:none; }
+    .actions { display:flex; gap:.4rem; }
+    .status-open { color: #1a7f37; font-weight: 600; }
+    .status-disabled { color: var(--warn); font-weight: 600; }
+    .status-closed { color: #cf222e; font-weight: 600; }
+    .status-unknown { color: #9a6700; font-weight: 600; }
+    button { border:1px solid var(--line); background:#fff; border-radius:6px; padding:.35rem .55rem; cursor:pointer; }
+    button.enable { border-color:#2da44e; color:#1a7f37; }
+    button.disable { border-color:#cf222e; color:#cf222e; }
+    details { margin-top:.4rem; }
+    pre { margin: .2rem 0 0; font-size: .78rem; max-width: 460px; overflow: auto; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>AMP Instance Port Firewall Manager</h1>
+    <p class="muted"><a href="{% url 'ports-providers' %}">Provider configuration</a></p>
+
+    {% if messages %}
+      <ul class="messages">
+        {% for message in messages %}
+          <li class="{{ message.tags }}">{{ message }}</li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+
+    <div class="panel">
+      <form method="get" class="filters">
+        <label>{{ filter_form.include_ads }} Include ADS instances</label>
+        <label>{{ filter_form.active_only }} Only active ports</label>
+        <label>Provider {{ filter_form.provider_id }}</label>
+        <label>Filter by {{ filter_form.filter_field }}</label>
+        <label>Contains {{ filter_form.filter_query }}</label>
+        <button type="submit">Refresh</button>
+      </form>
+      {% if not selected_provider_id %}
+        <p class="muted">No configured localhost firewall provider is available. Configure one on the provider page.</p>
+      {% endif %}
+      <form method="post" action="{% url 'ports-apply-bulk' %}" id="bulk-action-form" class="bulk-actions">
+        {% csrf_token %}
+        <input type="hidden" name="provider_id" value="{{ selected_provider_id }}">
+        <input type="hidden" name="targets_json" id="bulk-targets-json" value="[]">
+        <input type="hidden" name="return_provider_id" value="{{ selected_provider_id }}">
+        <input type="hidden" name="return_include_ads" value="{% if filter_form.include_ads.value %}1{% else %}0{% endif %}">
+        <input type="hidden" name="return_active_only" value="{% if selected_active_only %}1{% else %}0{% endif %}">
+        <input type="hidden" name="return_filter_field" value="{{ selected_filter_field }}">
+        <input type="hidden" name="return_filter_query" value="{{ selected_filter_query }}">
+        <input type="hidden" name="action" id="bulk-action-value" value="">
+        <label><input type="checkbox" id="select-all-global"> Select all</label>
+        <button type="button" id="bulk-enable" class="enable" {% if not selected_provider_id %}disabled{% endif %}>Enable selected</button>
+        <button type="button" id="bulk-disable" class="disable" {% if not selected_provider_id %}disabled{% endif %}>Disable selected</button>
+        <span class="muted" id="bulk-selected-count">Selected: 0</span>
+      </form>
+    </div>
+
+    {% if is_openwrt_provider %}
+      <div class="panel">
+        <h2 style="margin:.1rem 0 .6rem; font-size:1.1rem;">Orphan AMP Rules</h2>
+        <p class="muted">Rules that start with <code>AMP:</code> but do not match currently discovered AMP instance ports.</p>
+        <form method="post" action="{% url 'ports-apply-orphan-bulk' %}" id="orphan-bulk-form" class="bulk-actions">
+          {% csrf_token %}
+          <input type="hidden" name="provider_id" value="{{ selected_provider_id }}">
+          <input type="hidden" name="action" value="delete">
+          <input type="hidden" name="sections_json" id="orphan-sections-json" value="[]">
+          <input type="hidden" name="return_provider_id" value="{{ selected_provider_id }}">
+          <input type="hidden" name="return_include_ads" value="{% if filter_form.include_ads.value %}1{% else %}0{% endif %}">
+          <input type="hidden" name="return_active_only" value="{% if selected_active_only %}1{% else %}0{% endif %}">
+          <input type="hidden" name="return_filter_field" value="{{ selected_filter_field }}">
+          <input type="hidden" name="return_filter_query" value="{{ selected_filter_query }}">
+          <label><input type="checkbox" id="select-all-orphans"> Select all orphans</label>
+          <button type="button" id="bulk-delete-orphans" class="disable">Delete selected orphans</button>
+          <span class="muted" id="orphan-selected-count">Selected: 0</span>
+        </form>
+        <table>
+          <thead>
+            <tr>
+              <th><input type="checkbox" id="select-all-orphans-header"></th>
+              <th>Rule</th>
+              <th>Status</th>
+              <th>Why Orphan</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for orphan in orphan_rules %}
+              <tr>
+                <td>
+                  <input
+                    type="checkbox"
+                    class="orphan-select"
+                    data-section="{{ orphan.rule.section }}"
+                  >
+                </td>
+                <td>
+                  <div><strong>{{ orphan.rule.name }}</strong></div>
+                  <div class="muted">section={{ orphan.rule.section }} | type={{ orphan.rule.section_type }}</div>
+                  <div class="muted">instance={{ orphan.rule.instance_name|default:"-" }} | {{ orphan.rule.port }}/{{ orphan.rule.proto|default:"-" }}</div>
+                </td>
+                <td>
+                  {% if orphan.rule.enabled %}
+                    <span class="status-open">Enabled</span>
+                  {% else %}
+                    <span class="status-closed">Disabled</span>
+                  {% endif %}
+                </td>
+                <td class="muted">{{ orphan.reason }}</td>
+                <td>
+                  <div class="actions">
+                    <form method="post" action="{% url 'ports-apply-orphan' %}">
+                      {% csrf_token %}
+                      <input type="hidden" name="provider_id" value="{{ selected_provider_id }}">
+                      <input type="hidden" name="action" value="disable">
+                      <input type="hidden" name="section" value="{{ orphan.rule.section }}">
+                      <input type="hidden" name="return_provider_id" value="{{ selected_provider_id }}">
+                      <input type="hidden" name="return_include_ads" value="{% if filter_form.include_ads.value %}1{% else %}0{% endif %}">
+                      <input type="hidden" name="return_active_only" value="{% if selected_active_only %}1{% else %}0{% endif %}">
+                      <input type="hidden" name="return_filter_field" value="{{ selected_filter_field }}">
+                      <input type="hidden" name="return_filter_query" value="{{ selected_filter_query }}">
+                      <button class="disable" type="submit">Disable</button>
+                    </form>
+                    <form method="post" action="{% url 'ports-apply-orphan' %}" onsubmit="return confirm('Delete this orphan rule permanently?');">
+                      {% csrf_token %}
+                      <input type="hidden" name="provider_id" value="{{ selected_provider_id }}">
+                      <input type="hidden" name="action" value="delete">
+                      <input type="hidden" name="section" value="{{ orphan.rule.section }}">
+                      <input type="hidden" name="return_provider_id" value="{{ selected_provider_id }}">
+                      <input type="hidden" name="return_include_ads" value="{% if filter_form.include_ads.value %}1{% else %}0{% endif %}">
+                      <input type="hidden" name="return_active_only" value="{% if selected_active_only %}1{% else %}0{% endif %}">
+                      <input type="hidden" name="return_filter_field" value="{{ selected_filter_field }}">
+                      <input type="hidden" name="return_filter_query" value="{{ selected_filter_query }}">
+                      <button class="disable" type="submit">Delete</button>
+                    </form>
+                  </div>
+                </td>
+              </tr>
+            {% empty %}
+              <tr><td colspan="5" class="muted">No orphan AMP rules found.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% endif %}
+
+    {% for instance in instances %}
+      <div class="panel instance">
+        <div class="instance-head">
+          <strong>{{ instance.meta.instance_name }}</strong>
+          <span class="muted">{{ instance.meta.friendly_name }}</span>
+          <span class="muted">id={{ instance.meta.instance_id }}</span>
+          <span class="muted">module={{ instance.meta.module }}</span>
+          <span class="muted">running={{ instance.meta.running }}</span>
+        </div>
+
+        <table>
+          <thead>
+            <tr>
+              <th><input type="checkbox" class="select-all-instance" data-instance-id="{{ instance.meta.instance_id }}"></th>
+              <th>Port</th>
+              <th>Name / Description</th>
+              <th>Firewall Status</th>
+              <th>State</th>
+              <th>Flags</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in instance.ports %}
+              <tr>
+                <td>
+                  <input
+                    type="checkbox"
+                    class="port-select"
+                    data-instance-id="{{ instance.meta.instance_id }}"
+                    data-instance-name="{{ instance.meta.instance_name }}"
+                    data-instance-friendly-name="{{ instance.meta.friendly_name }}"
+                    data-port="{{ item.port.port }}"
+                    data-protocol="{{ item.port.protocol_name }}"
+                    data-description="{{ item.port.description|default:item.port.name }}"
+                  >
+                </td>
+                <td><strong>{{ item.port.port }}/{{ item.port.protocol_name }}</strong></td>
+                <td>
+                  <div>{{ item.port.name }}</div>
+                  <div class="muted">{{ item.port.description }}</div>
+                </td>
+                <td>
+                  <div class="{% if item.status == 'Open' %}status-open{% elif item.status == 'Disabled' %}status-disabled{% elif item.status == 'Closed' %}status-closed{% else %}status-unknown{% endif %}">
+                    {{ item.status }}
+                  </div>
+                  <div class="muted">{{ item.status_message }}</div>
+                </td>
+                <td>
+                  <div>required={{ item.port.required }}</div>
+                  <div>listening={{ item.port.listening }}</div>
+                  <div>verified={{ item.port.verified }}</div>
+                </td>
+                <td>
+                  <div>user_defined={{ item.port.is_user_defined }}</div>
+                  <div>firewall_target={{ item.port.is_firewall_target }}</div>
+                  <div>range={{ item.port.range }}</div>
+                </td>
+                <td>
+                  <div class="actions">
+                    <form method="post" action="{% url 'ports-apply' %}">
+                      {% csrf_token %}
+                      <input type="hidden" name="provider_id" value="{{ selected_provider_id }}">
+                      <input type="hidden" name="action" value="enable">
+                      <input type="hidden" name="instance_name" value="{{ instance.meta.instance_name }}">
+                      <input type="hidden" name="instance_friendly_name" value="{{ instance.meta.friendly_name }}">
+                      <input type="hidden" name="port" value="{{ item.port.port }}">
+                      <input type="hidden" name="protocol" value="{{ item.port.protocol_name }}">
+                      <input type="hidden" name="description" value="{{ item.port.description|default:item.port.name }}">
+                      <input type="hidden" name="return_provider_id" value="{{ selected_provider_id }}">
+                      <input type="hidden" name="return_include_ads" value="{% if filter_form.include_ads.value %}1{% else %}0{% endif %}">
+                      <input type="hidden" name="return_active_only" value="{% if selected_active_only %}1{% else %}0{% endif %}">
+                      <input type="hidden" name="return_filter_field" value="{{ selected_filter_field }}">
+                      <input type="hidden" name="return_filter_query" value="{{ selected_filter_query }}">
+                      <button class="enable" type="submit" {% if not selected_provider_id %}disabled{% endif %}>Enable</button>
+                    </form>
+                    <form method="post" action="{% url 'ports-apply' %}">
+                      {% csrf_token %}
+                      <input type="hidden" name="provider_id" value="{{ selected_provider_id }}">
+                      <input type="hidden" name="action" value="disable">
+                      <input type="hidden" name="instance_name" value="{{ instance.meta.instance_name }}">
+                      <input type="hidden" name="instance_friendly_name" value="{{ instance.meta.friendly_name }}">
+                      <input type="hidden" name="port" value="{{ item.port.port }}">
+                      <input type="hidden" name="protocol" value="{{ item.port.protocol_name }}">
+                      <input type="hidden" name="description" value="{{ item.port.description|default:item.port.name }}">
+                      <input type="hidden" name="return_provider_id" value="{{ selected_provider_id }}">
+                      <input type="hidden" name="return_include_ads" value="{% if filter_form.include_ads.value %}1{% else %}0{% endif %}">
+                      <input type="hidden" name="return_active_only" value="{% if selected_active_only %}1{% else %}0{% endif %}">
+                      <input type="hidden" name="return_filter_field" value="{{ selected_filter_field }}">
+                      <input type="hidden" name="return_filter_query" value="{{ selected_filter_query }}">
+                      <button class="disable" type="submit" {% if not selected_provider_id %}disabled{% endif %}>Disable</button>
+                    </form>
+                  </div>
+                  <details>
+                    <summary>Raw</summary>
+                    <pre>network={{ item.port.network_raw }}</pre>
+                    <pre>core={{ item.port.core_raw }}</pre>
+                  </details>
+                </td>
+              </tr>
+            {% empty %}
+              <tr><td colspan="7" class="muted">No ports found for this instance.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% empty %}
+      <div class="panel muted">No instances found or AMP query failed.</div>
+    {% endfor %}
+  </div>
+  <script>
+    (function () {
+      const selectAllGlobal = document.getElementById("select-all-global");
+      const selectAllInstance = Array.from(document.querySelectorAll(".select-all-instance"));
+      const rowChecks = Array.from(document.querySelectorAll(".port-select"));
+      const orphanChecks = Array.from(document.querySelectorAll(".orphan-select"));
+      const countEl = document.getElementById("bulk-selected-count");
+      const targetsInput = document.getElementById("bulk-targets-json");
+      const bulkForm = document.getElementById("bulk-action-form");
+      const actionInput = document.getElementById("bulk-action-value");
+      const btnEnable = document.getElementById("bulk-enable");
+      const btnDisable = document.getElementById("bulk-disable");
+      const orphanCountEl = document.getElementById("orphan-selected-count");
+      const orphanSectionsInput = document.getElementById("orphan-sections-json");
+      const orphanBulkForm = document.getElementById("orphan-bulk-form");
+      const btnDeleteOrphans = document.getElementById("bulk-delete-orphans");
+      const selectAllOrphans = document.getElementById("select-all-orphans");
+      const selectAllOrphansHeader = document.getElementById("select-all-orphans-header");
+
+      function collectTargets() {
+        return rowChecks
+          .filter((c) => c.checked)
+          .map((c) => ({
+            instance_name: c.dataset.instanceName || "",
+            instance_friendly_name: c.dataset.instanceFriendlyName || "",
+            port: Number(c.dataset.port || "0"),
+            protocol: c.dataset.protocol || "",
+            description: c.dataset.description || "",
+          }))
+          .filter((x) => x.instance_name && x.port > 0 && x.protocol);
+      }
+
+      function collectOrphanSections() {
+        return orphanChecks
+          .filter((c) => c.checked)
+          .map((c) => c.dataset.section || "")
+          .filter((x) => x);
+      }
+
+      function refreshUi() {
+        let checked = rowChecks.filter((c) => c.checked).length;
+        let orphanChecked = orphanChecks.filter((c) => c.checked).length;
+
+        if (checked > 0 && orphanChecked > 0) {
+          orphanChecks.forEach((c) => { c.checked = false; });
+          orphanChecked = 0;
+        }
+
+        if (countEl) countEl.textContent = `Selected: ${checked}`;
+        if (targetsInput) targetsInput.value = JSON.stringify(collectTargets());
+        if (orphanCountEl) orphanCountEl.textContent = `Selected: ${orphanChecked}`;
+        if (orphanSectionsInput) orphanSectionsInput.value = JSON.stringify(collectOrphanSections());
+
+        const hasPortSelection = checked > 0;
+        const hasOrphanSelection = orphanChecked > 0;
+        rowChecks.forEach((c) => { c.disabled = hasOrphanSelection; });
+        orphanChecks.forEach((c) => { c.disabled = hasPortSelection; });
+        selectAllInstance.forEach((header) => { header.disabled = hasOrphanSelection; });
+        if (selectAllGlobal) selectAllGlobal.disabled = hasOrphanSelection;
+        if (selectAllOrphans) selectAllOrphans.disabled = hasPortSelection;
+        if (selectAllOrphansHeader) selectAllOrphansHeader.disabled = hasPortSelection;
+        if (btnEnable) btnEnable.disabled = hasOrphanSelection;
+        if (btnDisable) btnDisable.disabled = hasOrphanSelection;
+        if (btnDeleteOrphans) btnDeleteOrphans.disabled = hasPortSelection;
+
+        if (selectAllGlobal) {
+          const allChecked = rowChecks.length > 0 && checked === rowChecks.length;
+          selectAllGlobal.checked = allChecked;
+        }
+        if (selectAllOrphans) {
+          selectAllOrphans.checked = orphanChecks.length > 0 && orphanChecked === orphanChecks.length;
+        }
+        if (selectAllOrphansHeader) {
+          selectAllOrphansHeader.checked = orphanChecks.length > 0 && orphanChecked === orphanChecks.length;
+        }
+        selectAllInstance.forEach((header) => {
+          const instanceId = header.dataset.instanceId;
+          const rows = rowChecks.filter((c) => c.dataset.instanceId === instanceId);
+          const selected = rows.filter((c) => c.checked).length;
+          header.checked = rows.length > 0 && selected === rows.length;
+        });
+      }
+
+      if (selectAllGlobal) {
+        selectAllGlobal.addEventListener("change", () => {
+          orphanChecks.forEach((c) => { c.checked = false; });
+          rowChecks.forEach((c) => { c.checked = selectAllGlobal.checked; });
+          refreshUi();
+        });
+      }
+      selectAllInstance.forEach((header) => {
+        header.addEventListener("change", () => {
+          const instanceId = header.dataset.instanceId;
+          orphanChecks.forEach((c) => { c.checked = false; });
+          rowChecks
+            .filter((c) => c.dataset.instanceId === instanceId)
+            .forEach((c) => { c.checked = header.checked; });
+          refreshUi();
+        });
+      });
+      rowChecks.forEach((c) => c.addEventListener("change", () => {
+        if (c.checked) {
+          orphanChecks.forEach((o) => { o.checked = false; });
+        }
+        refreshUi();
+      }));
+
+      function setAllOrphans(checked) {
+        rowChecks.forEach((c) => { c.checked = false; });
+        orphanChecks.forEach((c) => { c.checked = checked; });
+        refreshUi();
+      }
+
+      if (selectAllOrphans) {
+        selectAllOrphans.addEventListener("change", () => setAllOrphans(selectAllOrphans.checked));
+      }
+      if (selectAllOrphansHeader) {
+        selectAllOrphansHeader.addEventListener("change", () => setAllOrphans(selectAllOrphansHeader.checked));
+      }
+      orphanChecks.forEach((c) => c.addEventListener("change", () => {
+        if (c.checked) {
+          rowChecks.forEach((r) => { r.checked = false; });
+        }
+        refreshUi();
+      }));
+
+      function submitBulk(action) {
+        if (!bulkForm || !actionInput || !targetsInput) return;
+        const targets = collectTargets();
+        if (targets.length === 0) {
+          alert("Select at least one port first.");
+          return;
+        }
+        actionInput.value = action;
+        targetsInput.value = JSON.stringify(targets);
+        bulkForm.submit();
+      }
+
+      if (btnEnable) btnEnable.addEventListener("click", () => submitBulk("enable"));
+      if (btnDisable) btnDisable.addEventListener("click", () => submitBulk("disable"));
+
+      if (btnDeleteOrphans) {
+        btnDeleteOrphans.addEventListener("click", () => {
+          if (!orphanBulkForm || !orphanSectionsInput) return;
+          const sections = collectOrphanSections();
+          if (sections.length === 0) {
+            alert("Select at least one orphan rule first.");
+            return;
+          }
+          if (!confirm(`Delete ${sections.length} orphan rule(s)?`)) {
+            return;
+          }
+          orphanSectionsInput.value = JSON.stringify(sections);
+          orphanBulkForm.submit();
+        });
+      }
+      refreshUi();
+    })();
+  </script>
+</body>
+</html>
