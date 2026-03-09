@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import queue
+import threading
 from urllib.parse import urlencode
 
 from django.contrib import messages
 from django.conf import settings
-from django.http import HttpRequest, HttpResponse
+from django.http import HttpRequest, HttpResponse, StreamingHttpResponse
 from django.shortcuts import redirect, render
 from django.urls import reverse
 
@@ -18,8 +20,8 @@ from .forms import (
     PortActionForm,
     PortListFilterForm,
 )
-from .models import AMPConnectionConfig, FirewallProviderConfig
-from .services.amp_ports import AMPPortCollector, test_amp_connection
+from .models import AMPConnectionConfig, DiscoveredInstance, FirewallProviderConfig
+from .services.amp_ports import AMPPortCollector, InstancePort, InstancePorts, test_amp_connection
 from .services.snapshot_sync import sync_discovered_data
 
 
@@ -43,6 +45,50 @@ def _build_return_query_from_source(source: dict[str, str]) -> str:
     if query:
         return f"?{urlencode(query)}"
     return ""
+
+
+def _truthy(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _load_snapshot_instances(include_ads: bool = False) -> list[InstancePorts]:
+    rows: list[InstancePorts] = []
+    db_instances = DiscoveredInstance.objects.prefetch_related("ports").all()
+    for inst in db_instances:
+        if not include_ads and AMPPortCollector._is_ads(module=str(inst.module), instance_name=str(inst.instance_name)):
+            continue
+
+        ports: list[InstancePort] = []
+        for port in inst.ports.all():
+            ports.append(
+                InstancePort(
+                    port=int(port.port),
+                    protocol=int(port.protocol),
+                    protocol_name=str(port.protocol_name),
+                    name=str(port.name),
+                    description=str(port.description),
+                    required=port.required,
+                    listening=port.listening,
+                    verified=port.verified,
+                    is_user_defined=port.is_user_defined,
+                    is_firewall_target=port.is_firewall_target,
+                    range=port.range,
+                    network_raw=port.network_raw if isinstance(port.network_raw, dict) else None,
+                    core_raw=port.core_raw if isinstance(port.core_raw, dict) else None,
+                )
+            )
+
+        rows.append(
+            InstancePorts(
+                instance_id=str(inst.instance_id),
+                instance_name=str(inst.instance_name),
+                friendly_name=str(inst.friendly_name),
+                module=str(inst.module),
+                running=bool(inst.running),
+                ports=ports,
+            )
+        )
+    return rows
 
 
 def index(request: HttpRequest) -> HttpResponse:
@@ -70,35 +116,39 @@ def index(request: HttpRequest) -> HttpResponse:
         except Exception as exc:
             messages.error(request, f"Selected provider is not available: {exc}")
 
-    try:
-        collector = AMPPortCollector()
-        instances = collector.collect(include_ads=include_ads)
-        sync_result = sync_discovered_data(instances)
-        if any(
-            [
-                sync_result.instances_added,
-                sync_result.instances_removed,
-                sync_result.ports_added,
-                sync_result.ports_removed,
-            ]
-        ):
-            messages.info(
-                request,
-                "Sync update: "
-                f"instances +{sync_result.instances_added}/-{sync_result.instances_removed}, "
-                f"ports +{sync_result.ports_added}/-{sync_result.ports_removed}",
-            )
-    except Exception as exc:
-        msg = str(exc)
-        if "Missing AMP credentials" in msg:
-            providers_url = reverse("ports-providers")
-            messages.warning(
-                request,
-                f"AMP is not configured yet. Open {providers_url} and set AMP URL/username/password.",
-            )
-        else:
-            messages.error(request, f"Failed to collect ports: {exc}")
-        instances = []
+    skip_sync = _truthy(request.GET.get("skip_sync"))
+    if skip_sync:
+        instances = _load_snapshot_instances(include_ads=include_ads)
+    else:
+        try:
+            collector = AMPPortCollector()
+            instances = collector.collect(include_ads=include_ads)
+            sync_result = sync_discovered_data(instances)
+            if any(
+                [
+                    sync_result.instances_added,
+                    sync_result.instances_removed,
+                    sync_result.ports_added,
+                    sync_result.ports_removed,
+                ]
+            ):
+                messages.info(
+                    request,
+                    "Sync update: "
+                    f"instances +{sync_result.instances_added}/-{sync_result.instances_removed}, "
+                    f"ports +{sync_result.ports_added}/-{sync_result.ports_removed}",
+                )
+        except Exception as exc:
+            msg = str(exc)
+            if "Missing AMP credentials" in msg:
+                providers_url = reverse("ports-providers")
+                messages.warning(
+                    request,
+                    f"AMP is not configured yet. Open {providers_url} and set AMP URL/username/password.",
+                )
+            else:
+                messages.error(request, f"Failed to collect ports: {exc}")
+            instances = []
 
     rendered_instances: list[dict[str, object]] = []
     instance_ports_map: dict[str, set[tuple[str, int]]] = {}
@@ -192,6 +242,59 @@ def index(request: HttpRequest) -> HttpResponse:
         "is_openwrt_provider": is_openwrt_provider,
     }
     return render(request, "ports/index.html", context)
+
+
+def sync_progress(request: HttpRequest) -> StreamingHttpResponse:
+    include_ads = _truthy(request.GET.get("include_ads"))
+    event_queue: queue.Queue[dict[str, object]] = queue.Queue()
+
+    def emit(item: dict[str, object]) -> None:
+        event_queue.put(item)
+
+    def worker() -> None:
+        try:
+            emit({"type": "status", "done": 0, "total": 0, "message": "Connecting to AMP..."})
+            collector = AMPPortCollector()
+            instances = collector.collect(
+                include_ads=include_ads,
+                progress_cb=lambda done, total, message: emit(
+                    {"type": "progress", "done": done, "total": total, "message": message}
+                ),
+            )
+            emit({"type": "status", "done": len(instances), "total": len(instances), "message": "Syncing snapshot..."})
+            sync_result = sync_discovered_data(instances)
+            emit(
+                {
+                    "type": "done",
+                    "done": len(instances),
+                    "total": len(instances),
+                    "message": (
+                        "Sync complete. "
+                        f"instances +{sync_result.instances_added}/-{sync_result.instances_removed}, "
+                        f"ports +{sync_result.ports_added}/-{sync_result.ports_removed}"
+                    ),
+                }
+            )
+        except Exception as exc:
+            emit({"type": "error", "message": str(exc)})
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+
+    def event_stream():
+        while True:
+            payload = event_queue.get()
+            event_type = str(payload.get("type", "status"))
+            data = json.dumps(payload)
+            yield f"event: {event_type}\n"
+            yield f"data: {data}\n\n"
+            if event_type in {"done", "error"}:
+                break
+
+    response = StreamingHttpResponse(event_stream(), content_type="text/event-stream")
+    response["Cache-Control"] = "no-cache"
+    response["X-Accel-Buffering"] = "no"
+    return response
 
 
 def apply_port_action(request: HttpRequest) -> HttpResponse:

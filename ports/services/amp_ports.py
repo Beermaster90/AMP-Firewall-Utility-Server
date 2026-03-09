@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from ampapi import AMPControllerInstance, APIParams, Bridge
 from ampapi.modules import ActionResultError
@@ -182,19 +182,36 @@ class AMPPortCollector:
             )
         return rows
 
-    async def collect_async(self, include_ads: bool = False) -> list[InstancePorts]:
+    async def collect_async(
+        self,
+        include_ads: bool = False,
+        progress_cb: Callable[[int, int, str], None] | None = None,
+    ) -> list[InstancePorts]:
         ads = await self._connect()
         try:
             instances = await ads.get_instances(format_data=True)
             if isinstance(instances, ActionResultError):
                 raise RuntimeError(f"Failed to list instances: {instances}")
 
+            ordered_instances = sorted(instances, key=lambda x: str(getattr(x, "instance_name", "")).lower())
+            filtered_instances = [
+                inst
+                for inst in ordered_instances
+                if include_ads
+                or not self._is_ads(
+                    module=str(getattr(inst, "module", "")),
+                    instance_name=str(getattr(inst, "instance_name", "")),
+                )
+            ]
+            total_instances = len(filtered_instances)
+            if progress_cb is not None:
+                progress_cb(0, total_instances, "Connected to AMP")
+
             rows: list[InstancePorts] = []
-            for inst in sorted(instances, key=lambda x: str(getattr(x, "instance_name", "")).lower()):
+            done_instances = 0
+            for inst in filtered_instances:
                 instance_name = str(getattr(inst, "instance_name", ""))
                 module = str(getattr(inst, "module", ""))
-                if not include_ads and self._is_ads(module=module, instance_name=instance_name):
-                    continue
 
                 instance_id = str(getattr(inst, "instance_id", ""))
                 if not instance_id or not instance_name:
@@ -215,12 +232,19 @@ class AMPPortCollector:
                         ports=merged,
                     )
                 )
+                done_instances += 1
+                if progress_cb is not None:
+                    progress_cb(done_instances, total_instances, f"Loaded {instance_name}")
             return rows
         finally:
             await ads.__adel__()
 
-    def collect(self, include_ads: bool = False) -> list[InstancePorts]:
-        return asyncio.run(self.collect_async(include_ads=include_ads))
+    def collect(
+        self,
+        include_ads: bool = False,
+        progress_cb: Callable[[int, int, str], None] | None = None,
+    ) -> list[InstancePorts]:
+        return asyncio.run(self.collect_async(include_ads=include_ads, progress_cb=progress_cb))
 
 
 async def _test_amp_connection_async(url: str, username: str, password: str) -> int:
@@ -234,9 +258,18 @@ async def _test_amp_connection_async(url: str, username: str, password: str) -> 
         instances = await ads.get_instances(format_data=True)
         if isinstance(instances, ActionResultError):
             raise RuntimeError(f"AMP instance query failed: {instances}")
-        if not isinstance(instances, list):
+        if isinstance(instances, (list, set, tuple)):
+            return len(instances)
+        if isinstance(instances, dict):
+            # Be tolerant of wrapped payloads if AMP/ampapi changes shape.
+            for key in ("instances", "available_instances", "result"):
+                value = instances.get(key)
+                if isinstance(value, (list, set, tuple)):
+                    return len(value)
             raise RuntimeError("Unexpected AMP response: instances list missing")
-        return len(instances)
+        if hasattr(instances, "__iter__") and not isinstance(instances, (str, bytes)):
+            return sum(1 for _ in instances)
+        raise RuntimeError("Unexpected AMP response: instances list missing")
     finally:
         await ads.__adel__()
 

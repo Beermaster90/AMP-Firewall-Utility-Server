@@ -33,9 +33,68 @@
     button.disable { border-color:#cf222e; color:#cf222e; }
     details { margin-top:.4rem; }
     pre { margin: .2rem 0 0; font-size: .78rem; max-width: 460px; overflow: auto; }
+    .loading-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.48);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 9999;
+      backdrop-filter: blur(2px);
+    }
+    .loading-overlay.active { display: flex; }
+    .loading-card {
+      min-width: 320px;
+      max-width: 460px;
+      background: #ffffff;
+      border: 1px solid #cbd5e1;
+      border-radius: 14px;
+      padding: 1rem 1.1rem;
+      box-shadow: 0 20px 60px rgba(15, 23, 42, 0.22);
+    }
+    .loading-head { display:flex; gap:.7rem; align-items:center; margin-bottom:.5rem; }
+    .spinner {
+      width: 28px;
+      height: 28px;
+      border: 3px solid #cbd5e1;
+      border-top-color: #0ea5e9;
+      border-radius: 50%;
+      animation: spin .9s linear infinite;
+      flex: 0 0 28px;
+    }
+    .loading-title { font-weight: 700; font-size: 1rem; }
+    .loading-meta { color: #475569; font-size: .92rem; margin: .2rem 0; }
+    .progress-track {
+      width: 100%;
+      height: 10px;
+      border-radius: 999px;
+      background: #e2e8f0;
+      overflow: hidden;
+      margin-top: .6rem;
+    }
+    .progress-fill {
+      width: 0%;
+      height: 100%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, #0ea5e9 0%, #22c55e 100%);
+      transition: width .25s ease;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
   </style>
 </head>
 <body>
+  <div id="loading-overlay" class="loading-overlay" aria-live="polite" aria-busy="true">
+    <div class="loading-card">
+      <div class="loading-head">
+        <div class="spinner" aria-hidden="true"></div>
+        <div class="loading-title">Loading AMP data...</div>
+      </div>
+      <div class="loading-meta" id="loading-step-text">Connecting...</div>
+      <div class="loading-meta" id="loading-count-text">0/0</div>
+      <div class="progress-track"><div id="loading-progress-fill" class="progress-fill"></div></div>
+    </div>
+  </div>
   <div class="container">
     <h1>AMP Instance Port Firewall Manager</h1>
     <p class="muted"><a href="{% url 'ports-providers' %}">Provider configuration</a></p>
@@ -49,7 +108,7 @@
     {% endif %}
 
     <div class="panel">
-      <form method="get" class="filters">
+      <form method="get" class="filters" id="filters-form">
         <label>{{ filter_form.include_ads }} Include ADS instances</label>
         <label>{{ filter_form.active_only }} Only active ports</label>
         <label>Provider {{ filter_form.provider_id }}</label>
@@ -293,6 +352,13 @@
       const btnDeleteOrphans = document.getElementById("bulk-delete-orphans");
       const selectAllOrphans = document.getElementById("select-all-orphans");
       const selectAllOrphansHeader = document.getElementById("select-all-orphans-header");
+      const filtersForm = document.getElementById("filters-form");
+      const providerSelect = document.getElementById("id_provider_id");
+      const loadingOverlay = document.getElementById("loading-overlay");
+      const loadingStepText = document.getElementById("loading-step-text");
+      const loadingCountText = document.getElementById("loading-count-text");
+      const loadingProgressFill = document.getElementById("loading-progress-fill");
+      let activeSyncSource = null;
 
       function collectTargets() {
         return rowChecks
@@ -431,6 +497,100 @@
           orphanBulkForm.submit();
         });
       }
+
+      if (filtersForm && providerSelect) {
+        providerSelect.addEventListener("change", () => {
+          if (typeof filtersForm.requestSubmit === "function") {
+            filtersForm.requestSubmit();
+          } else {
+            const submitEvent = new Event("submit", { cancelable: true });
+            if (filtersForm.dispatchEvent(submitEvent)) {
+              filtersForm.submit();
+            }
+          }
+        });
+      }
+
+      function updateLoading(done, total, message) {
+        const safeDone = Number.isFinite(done) ? Math.max(0, done) : 0;
+        const safeTotal = Number.isFinite(total) ? Math.max(0, total) : 0;
+        if (loadingStepText && message) loadingStepText.textContent = String(message);
+        if (loadingCountText) loadingCountText.textContent = `${safeDone}/${safeTotal}`;
+        if (loadingProgressFill) {
+          const pct = safeTotal > 0 ? Math.min(100, Math.round((safeDone / safeTotal) * 100)) : 0;
+          loadingProgressFill.style.width = `${pct}%`;
+        }
+      }
+
+      function beginSyncAndReload() {
+        if (!filtersForm || !loadingOverlay) return false;
+        if (typeof window.EventSource === "undefined") return false;
+
+        const params = new URLSearchParams(new FormData(filtersForm));
+        const syncUrl = `{% url 'ports-sync-progress' %}?${params.toString()}`;
+        const reloadParams = new URLSearchParams(params);
+        reloadParams.set("skip_sync", "1");
+        const basePath = window.location.pathname;
+        const reloadUrl = `${basePath}?${reloadParams.toString()}`;
+
+        loadingOverlay.classList.add("active");
+        updateLoading(0, 0, "Connecting to AMP...");
+
+        if (activeSyncSource) {
+          activeSyncSource.close();
+          activeSyncSource = null;
+        }
+
+        const source = new EventSource(syncUrl);
+        activeSyncSource = source;
+        let finished = false;
+
+        function handleEvent(event) {
+          try {
+            const data = JSON.parse(event.data || "{}");
+            updateLoading(Number(data.done || 0), Number(data.total || 0), data.message || "");
+          } catch (_) {
+            updateLoading(0, 0, "Loading...");
+          }
+        }
+
+        source.addEventListener("status", handleEvent);
+        source.addEventListener("progress", handleEvent);
+        source.addEventListener("done", (event) => {
+          finished = true;
+          handleEvent(event);
+          source.close();
+          window.location.assign(reloadUrl);
+        });
+        source.addEventListener("error", (event) => {
+          finished = true;
+          source.close();
+          loadingOverlay.classList.remove("active");
+          try {
+            const data = JSON.parse(event.data || "{}");
+            alert(`Sync failed: ${data.message || "Unknown error"}`);
+          } catch (_) {
+            alert("Sync failed.");
+          }
+        });
+        source.onerror = () => {
+          if (finished) return;
+          source.close();
+          loadingOverlay.classList.remove("active");
+          alert("Sync stream disconnected.");
+        };
+
+        return true;
+      }
+
+      if (filtersForm) {
+        filtersForm.addEventListener("submit", (event) => {
+          if (beginSyncAndReload()) {
+            event.preventDefault();
+          }
+        });
+      }
+
       refreshUi();
     })();
   </script>
