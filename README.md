@@ -53,6 +53,11 @@ sudo chmod 440 /etc/sudoers.d/amp-firewall-web
 
 Open: `http://127.0.0.1:8001/`
 
+You can also open it from your local network using the host LAN IP, for example:
+- `http://192.168.x.x:8001/`
+
+Do **not** expose this service directly to the public internet. It is not hardened/validated as an internet-facing secure service.
+
 ## Configuration Model
 
 - AMP and firewall provider configuration are managed from the UI:
