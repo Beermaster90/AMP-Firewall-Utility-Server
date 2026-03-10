@@ -11,6 +11,7 @@
     h1 { margin: .5rem 0 1rem; font-size: 1.5rem; }
     .panel { background:var(--panel); border:1px solid var(--line); border-radius: 10px; padding: .9rem; margin-bottom: 1rem; }
     .filters { display:flex; flex-wrap:wrap; gap: .8rem 1.2rem; align-items: center; }
+    .filter-actions { display:flex; gap:.5rem; align-items:center; }
     .bulk-actions { display:flex; gap:.6rem; align-items:center; margin-top:.7rem; }
     .messages { list-style: none; padding: 0; margin: 0 0 1rem; }
     .messages li { padding: .6rem .8rem; border-radius: 8px; margin-bottom: .4rem; }
@@ -24,6 +25,17 @@
     th, td { padding: .45rem .5rem; border-top: 1px solid var(--line); vertical-align: top; }
     th { text-align:left; background:#f3f4f6; border-top:none; }
     .actions { display:flex; gap:.4rem; }
+    .topbar { display:flex; flex-wrap:wrap; gap:.5rem 1rem; align-items:center; justify-content:space-between; }
+    .signout-form { display:inline; margin:0; }
+    .link-button {
+      border:none;
+      background:none;
+      padding:0;
+      color:#0969da;
+      text-decoration:underline;
+      cursor:pointer;
+      font:inherit;
+    }
     .status-open { color: #1a7f37; font-weight: 600; }
     .status-disabled { color: var(--warn); font-weight: 600; }
     .status-closed { color: #cf222e; font-weight: 600; }
@@ -88,7 +100,7 @@
     <div class="loading-card">
       <div class="loading-head">
         <div class="spinner" aria-hidden="true"></div>
-        <div class="loading-title">Loading AMP data...</div>
+        <div class="loading-title" id="loading-title-text">Loading data...</div>
       </div>
       <div class="loading-meta" id="loading-step-text">Connecting...</div>
       <div class="loading-meta" id="loading-count-text">0/0</div>
@@ -96,8 +108,19 @@
     </div>
   </div>
   <div class="container">
-    <h1>AMP Instance Port Firewall Manager</h1>
-    <p class="muted"><a href="{% url 'ports-providers' %}">Provider configuration</a></p>
+    <div class="topbar">
+      <div>
+        <h1>AMP Instance Port Firewall Manager</h1>
+        <p class="muted"><a href="{% url 'ports-providers' %}">Provider configuration</a></p>
+      </div>
+      {% if request.user.is_authenticated %}
+        <form method="post" action="{% url 'logout' %}" class="signout-form">
+          {% csrf_token %}
+          <span class="muted">Signed in as {{ request.user.username }}</span>
+          <button type="submit" class="link-button">Sign out</button>
+        </form>
+      {% endif %}
+    </div>
 
     {% if messages %}
       <ul class="messages">
@@ -114,7 +137,9 @@
         <label>Provider {{ filter_form.provider_id }}</label>
         <label>Filter by {{ filter_form.filter_field }}</label>
         <label>Contains {{ filter_form.filter_query }}</label>
-        <button type="submit">Refresh</button>
+        <div class="filter-actions">
+          <button type="submit" id="refresh-view-button">Refresh</button>
+        </div>
       </form>
       {% if not selected_provider_id %}
         <p class="muted">No configured localhost firewall provider is available. Configure one on the provider page.</p>
@@ -357,6 +382,7 @@
       const filtersForm = document.getElementById("filters-form");
       const providerSelect = document.getElementById("id_provider_id");
       const loadingOverlay = document.getElementById("loading-overlay");
+      const loadingTitleText = document.getElementById("loading-title-text");
       const loadingStepText = document.getElementById("loading-step-text");
       const loadingCountText = document.getElementById("loading-count-text");
       const loadingProgressFill = document.getElementById("loading-progress-fill");
@@ -500,19 +526,6 @@
         });
       }
 
-      if (filtersForm && providerSelect) {
-        providerSelect.addEventListener("change", () => {
-          if (typeof filtersForm.requestSubmit === "function") {
-            filtersForm.requestSubmit();
-          } else {
-            const submitEvent = new Event("submit", { cancelable: true });
-            if (filtersForm.dispatchEvent(submitEvent)) {
-              filtersForm.submit();
-            }
-          }
-        });
-      }
-
       function updateLoading(done, total, message) {
         const safeDone = Number.isFinite(done) ? Math.max(0, done) : 0;
         const safeTotal = Number.isFinite(total) ? Math.max(0, total) : 0;
@@ -524,19 +537,30 @@
         }
       }
 
+      function beginPageReload(message) {
+        if (!loadingOverlay) return;
+        if (loadingTitleText) loadingTitleText.textContent = "Refreshing view...";
+        if (loadingStepText) loadingStepText.textContent = message || "Loading firewall data...";
+        if (loadingCountText) loadingCountText.textContent = "";
+        if (loadingProgressFill) loadingProgressFill.style.width = "100%";
+        loadingOverlay.classList.add("active");
+      }
+
       function beginSyncAndReload() {
         if (!filtersForm || !loadingOverlay) return false;
         if (typeof window.EventSource === "undefined") return false;
 
         const params = new URLSearchParams(new FormData(filtersForm));
+        params.set("sync", "1");
         const syncUrl = `{% url 'ports-sync-progress' %}?${params.toString()}`;
         const reloadParams = new URLSearchParams(params);
-        reloadParams.set("skip_sync", "1");
+        reloadParams.delete("sync");
         const basePath = window.location.pathname;
         const reloadUrl = `${basePath}?${reloadParams.toString()}`;
 
-        loadingOverlay.classList.add("active");
+        if (loadingTitleText) loadingTitleText.textContent = "Loading AMP data...";
         updateLoading(0, 0, "Connecting to AMP...");
+        loadingOverlay.classList.add("active");
 
         if (activeSyncSource) {
           activeSyncSource.close();
@@ -660,11 +684,29 @@
         });
       });
 
+      if (filtersForm && providerSelect) {
+        providerSelect.addEventListener("change", () => {
+          if (providerSelect.value === "openwrt") {
+            beginSyncAndReload();
+            return;
+          }
+          beginPageReload("Refreshing firewall status...");
+          if (typeof filtersForm.requestSubmit === "function") {
+            filtersForm.requestSubmit();
+          } else {
+            filtersForm.submit();
+          }
+        });
+      }
+
       if (filtersForm) {
         filtersForm.addEventListener("submit", (event) => {
-          if (beginSyncAndReload()) {
+          if (providerSelect && providerSelect.value === "openwrt") {
             event.preventDefault();
+            beginSyncAndReload();
+            return;
           }
+          beginPageReload("Refreshing firewall status...");
         });
       }
 

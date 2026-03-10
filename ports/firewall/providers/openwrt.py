@@ -7,6 +7,8 @@ from typing import Any
 
 from django.conf import settings
 
+from ports.security import validate_management_url, validate_provider_section_name
+
 from ..base import (
     FirewallAction,
     FirewallActionResult,
@@ -188,7 +190,7 @@ class OpenWrtFirewallProvider(FirewallProvider):
             )
 
     def _rpc_url(self) -> str:
-        return str(self.config.get("rpc_url", "")).strip()
+        return validate_management_url(str(self.config.get("rpc_url", "")).strip(), setting_name="OPENWRT_ALLOWED_HOSTS")
 
     def _auth(self) -> dict[str, str]:
         raw = self.config.get("auth", {})
@@ -286,11 +288,13 @@ class OpenWrtFirewallProvider(FirewallProvider):
         return rows
 
     def disable_rule_by_section(self, section: str) -> None:
+        section = validate_provider_section_name(section)
         session = self._login()
         self._uci_set(session=session, section=section, values={"enabled": "0"})
         self._uci_apply(session=session)
 
     def delete_rule_by_section(self, section: str) -> None:
+        section = validate_provider_section_name(section)
         session = self._login()
         self._uci_delete(session=session, section=section)
         self._uci_apply(session=session)

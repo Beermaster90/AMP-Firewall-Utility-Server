@@ -39,9 +39,16 @@ class ShellCommandFirewallProvider(FirewallProvider):
         if self.use_sudo:
             command = ["sudo", "-n", *command]
         try:
-            completed = subprocess.run(command, capture_output=True, text=True)
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=float(getattr(settings, "FIREWALL_COMMAND_TIMEOUT", 10)),
+            )
         except FileNotFoundError:
             return False, "", f"Command not found: {command[0]}"
+        except subprocess.TimeoutExpired:
+            return False, "", "Firewall command timed out."
         return completed.returncode == 0, completed.stdout or "", completed.stderr or ""
 
     def is_supported(self) -> tuple[bool, str]:

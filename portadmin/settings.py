@@ -40,8 +40,8 @@ def _resolve_secret_key() -> str:
 
 
 SECRET_KEY = _resolve_secret_key()
-DEBUG = os.getenv("DJANGO_DEBUG", "1") == "1"
-ALLOWED_HOSTS = [h.strip() for h in os.getenv("DJANGO_ALLOWED_HOSTS", "*").split(",") if h.strip()]
+DEBUG = os.getenv("DJANGO_DEBUG", "0") == "1"
+ALLOWED_HOSTS = [h.strip() for h in os.getenv("DJANGO_ALLOWED_HOSTS", "127.0.0.1,localhost,[::1]").split(",") if h.strip()]
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -105,6 +105,23 @@ STATIC_URL = "static/"
 STATICFILES_DIRS = [BASE_DIR / "static"]
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+LOGIN_URL = "/login/"
+LOGIN_REDIRECT_URL = "/"
+LOGOUT_REDIRECT_URL = "/login/"
+
+SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SAMESITE = "Lax"
+CSRF_COOKIE_HTTPONLY = True
+CSRF_COOKIE_SAMESITE = "Lax"
+SECURE_BROWSER_XSS_FILTER = True
+SECURE_CONTENT_TYPE_NOSNIFF = True
+X_FRAME_OPTIONS = "DENY"
+SECURE_REFERRER_POLICY = "same-origin"
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+USE_X_FORWARDED_HOST = os.getenv("DJANGO_USE_X_FORWARDED_HOST", "0") == "1"
+SECURE_SSL_REDIRECT = os.getenv("DJANGO_SECURE_SSL_REDIRECT", "0") == "1"
+SESSION_COOKIE_SECURE = os.getenv("DJANGO_SESSION_COOKIE_SECURE", "0") == "1"
+CSRF_COOKIE_SECURE = os.getenv("DJANGO_CSRF_COOKIE_SECURE", "0") == "1"
 
 # Provider id -> import path. Add more providers here without changing views.
 FIREWALL_PROVIDERS = {
@@ -116,5 +133,6 @@ FIREWALL_PROVIDERS = {
 
 # Safety switch. Enabled by default; set FIREWALL_EXECUTE=0 to force dry-run mode.
 FIREWALL_EXECUTE = os.getenv("FIREWALL_EXECUTE", "1") == "1"
+FIREWALL_COMMAND_TIMEOUT = float(os.getenv("FIREWALL_COMMAND_TIMEOUT", "10"))
 
 FIREWALL_PROVIDER_DEFAULT_CONFIGS = {}

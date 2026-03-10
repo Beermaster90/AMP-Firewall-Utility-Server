@@ -23,12 +23,26 @@
     .messages .warning { background:#fff8c5; color:#9a6700; }
     .messages .info { background:#ddf4ff; color:#0969da; }
     .actions { display:flex; gap:.6rem; align-items:center; margin-top:.6rem; }
+    .topbar { display:flex; flex-wrap:wrap; gap:.5rem 1rem; align-items:center; justify-content:space-between; }
+    .signout-form { display:inline; margin:0; }
+    .link-button { border:none; background:none; padding:0; color:#0969da; text-decoration:underline; cursor:pointer; font:inherit; }
   </style>
 </head>
 <body>
   <div class="container">
-    <h1>Firewall Provider Configuration</h1>
-    <p class="meta"><a href="{% url 'ports-index' %}">Back to port list</a></p>
+    <div class="topbar">
+      <div>
+        <h1>Firewall Provider Configuration</h1>
+        <p class="meta"><a href="{% url 'ports-index' %}">Back to port list</a></p>
+      </div>
+      {% if request.user.is_authenticated %}
+        <form method="post" action="{% url 'logout' %}" class="signout-form">
+          {% csrf_token %}
+          <span class="meta">Signed in as {{ request.user.username }}</span>
+          <button type="submit" class="link-button">Sign out</button>
+        </form>
+      {% endif %}
+    </div>
 
     {% if messages %}
       <ul class="messages">

@@ -7,6 +7,7 @@ from urllib.parse import urlencode
 
 from django.contrib import messages
 from django.conf import settings
+from django.contrib.auth.decorators import login_required
 from django.http import HttpRequest, HttpResponse, JsonResponse, StreamingHttpResponse
 from django.shortcuts import redirect, render
 from django.urls import reverse
@@ -21,6 +22,7 @@ from .forms import (
     PortListFilterForm,
 )
 from .models import AMPConnectionConfig, DiscoveredInstance, DiscoveredPort, FirewallProviderConfig
+from .security import validate_firewall_protocol, validate_management_url, validate_provider_section_name
 from .services.amp_ports import AMPPortCollector, InstancePort, InstancePorts, test_amp_connection
 from .services.snapshot_sync import sync_discovered_data
 
@@ -49,6 +51,52 @@ def _build_return_query_from_source(source: dict[str, str]) -> str:
 
 def _truthy(value: str | None) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _validated_target_from_payload(item: dict[str, object]) -> FirewallPortTarget:
+    instance_name = str(item.get("instance_name", "") or "").strip()
+    if not instance_name:
+        raise ValueError("Instance name is required.")
+
+    port = int(item.get("port"))
+    if port < 1 or port > 65535:
+        raise ValueError("Port must be between 1 and 65535.")
+
+    protocol = validate_firewall_protocol(str(item.get("protocol", "") or ""))
+    instance_friendly_name = str(item.get("instance_friendly_name", "") or "").strip()
+    description = str(item.get("description", "") or "").strip()
+
+    discovered_port = (
+        DiscoveredPort.objects.select_related("instance")
+        .filter(
+            instance__instance_name=instance_name,
+            port=port,
+            protocol_name__iexact=protocol,
+        )
+        .first()
+    )
+    if discovered_port is None:
+        raise ValueError("Requested target is not part of the discovered AMP snapshot.")
+
+    return FirewallPortTarget(
+        instance_name=str(discovered_port.instance.instance_name),
+        port=int(discovered_port.port),
+        protocol=str(discovered_port.protocol_name).lower(),
+        instance_friendly_name=str(discovered_port.instance.friendly_name or instance_friendly_name),
+        description=str(discovered_port.description or discovered_port.name or description),
+    )
+
+
+def _load_valid_managed_sections(provider: object) -> set[str]:
+    if not hasattr(provider, "list_managed_rules"):
+        return set()
+    rules = provider.list_managed_rules()  # type: ignore[attr-defined]
+    sections: set[str] = set()
+    for rule in rules:
+        section = str(rule.get("section", "") or "").strip()
+        if section:
+            sections.add(section)
+    return sections
 
 
 def _load_snapshot_instances(include_ads: bool = False) -> list[InstancePorts]:
@@ -91,6 +139,7 @@ def _load_snapshot_instances(include_ads: bool = False) -> list[InstancePorts]:
     return rows
 
 
+@login_required
 def index(request: HttpRequest) -> HttpResponse:
     filter_form = PortListFilterForm(request.GET or None)
     include_ads = bool(filter_form.data.get("include_ads")) if filter_form.is_bound else False
@@ -116,10 +165,9 @@ def index(request: HttpRequest) -> HttpResponse:
         except Exception as exc:
             messages.error(request, f"Selected provider is not available: {exc}")
 
-    skip_sync = _truthy(request.GET.get("skip_sync"))
-    if skip_sync:
-        instances = _load_snapshot_instances(include_ads=include_ads)
-    else:
+    sync_requested = _truthy(request.GET.get("sync"))
+    snapshot_loaded = False
+    if sync_requested:
         try:
             collector = AMPPortCollector()
             instances = collector.collect(include_ads=include_ads)
@@ -148,7 +196,17 @@ def index(request: HttpRequest) -> HttpResponse:
                 )
             else:
                 messages.error(request, f"Failed to collect ports: {exc}")
-            instances = []
+            instances = _load_snapshot_instances(include_ads=include_ads)
+            snapshot_loaded = True
+    else:
+        instances = _load_snapshot_instances(include_ads=include_ads)
+        snapshot_loaded = True
+
+    if snapshot_loaded and not instances:
+        messages.info(
+            request,
+            "Showing stored snapshot data. Use 'Sync AMP data' to refresh instances and ports from AMP.",
+        )
 
     rendered_instances: list[dict[str, object]] = []
     instance_ports_map: dict[str, set[tuple[str, int]]] = {}
@@ -237,10 +295,12 @@ def index(request: HttpRequest) -> HttpResponse:
         "selected_active_only": active_only,
         "orphan_rules": orphan_rules,
         "is_openwrt_provider": is_openwrt_provider,
+        "sync_requested": sync_requested,
     }
     return render(request, "ports/index.html", context)
 
 
+@login_required
 def sync_progress(request: HttpRequest) -> StreamingHttpResponse:
     include_ads = _truthy(request.GET.get("include_ads"))
     event_queue: queue.Queue[dict[str, object]] = queue.Queue()
@@ -294,6 +354,7 @@ def sync_progress(request: HttpRequest) -> StreamingHttpResponse:
     return response
 
 
+@login_required
 def apply_port_action(request: HttpRequest) -> HttpResponse:
     wants_json = (
         request.headers.get("x-requested-with") == "XMLHttpRequest"
@@ -325,15 +386,8 @@ def apply_port_action(request: HttpRequest) -> HttpResponse:
     action_value = str(form.cleaned_data["action"])
     action = FirewallAction(action_value)
 
-    target = FirewallPortTarget(
-        instance_name=str(form.cleaned_data["instance_name"]),
-        port=int(form.cleaned_data["port"]),
-        protocol=str(form.cleaned_data["protocol"]),
-        instance_friendly_name=str(form.cleaned_data.get("instance_friendly_name", "")),
-        description=str(form.cleaned_data["description"]),
-    )
-
     try:
+        target = _validated_target_from_payload(form.cleaned_data)
         provider = get_provider(provider_id, require_available=True)
         result = provider.apply(action=action, target=target)
     except Exception as exc:
@@ -392,6 +446,7 @@ def apply_port_action(request: HttpRequest) -> HttpResponse:
     return _redirect_back()
 
 
+@login_required
 def apply_bulk_action(request: HttpRequest) -> HttpResponse:
     def _redirect_back(form: BulkPortActionForm | None = None) -> HttpResponse:
         source = request.POST
@@ -426,15 +481,7 @@ def apply_bulk_action(request: HttpRequest) -> HttpResponse:
         if not isinstance(item, dict):
             continue
         try:
-            targets.append(
-                FirewallPortTarget(
-                    instance_name=str(item.get("instance_name", "")),
-                    port=int(item.get("port")),
-                    protocol=str(item.get("protocol", "")),
-                    instance_friendly_name=str(item.get("instance_friendly_name", "")),
-                    description=str(item.get("description", "")),
-                )
-            )
+            targets.append(_validated_target_from_payload(item))
         except Exception:
             continue
 
@@ -465,6 +512,7 @@ def apply_bulk_action(request: HttpRequest) -> HttpResponse:
     return _redirect_back(form)
 
 
+@login_required
 def apply_orphan_action(request: HttpRequest) -> HttpResponse:
     def _redirect_back(form: OrphanRuleActionForm | None = None) -> HttpResponse:
         source = request.POST
@@ -486,12 +534,14 @@ def apply_orphan_action(request: HttpRequest) -> HttpResponse:
 
     provider_id = str(form.cleaned_data["provider_id"])
     action = str(form.cleaned_data["action"])
-    section = str(form.cleaned_data["section"])
+    section = validate_provider_section_name(str(form.cleaned_data["section"]))
 
     try:
         provider = get_provider(provider_id, require_available=True)
         if provider.provider_id != "openwrt":
             raise RuntimeError("Orphan action is only supported for openwrt provider.")
+        if section not in _load_valid_managed_sections(provider):
+            raise RuntimeError("Section is not a managed AMP-created OpenWrt rule.")
         if action == "disable":
             provider.disable_rule_by_section(section)  # type: ignore[attr-defined]
             messages.success(request, f"Disabled orphan OpenWrt rule section {section}.")
@@ -506,6 +556,7 @@ def apply_orphan_action(request: HttpRequest) -> HttpResponse:
     return _redirect_back(form)
 
 
+@login_required
 def apply_orphan_bulk_action(request: HttpRequest) -> HttpResponse:
     def _redirect_back(form: OrphanRuleBulkActionForm | None = None) -> HttpResponse:
         source = request.POST
@@ -539,7 +590,12 @@ def apply_orphan_bulk_action(request: HttpRequest) -> HttpResponse:
         messages.error(request, f"Invalid selected orphan sections payload: {exc}")
         return _redirect_back(form)
 
-    sections = [str(x).strip() for x in sections_payload if str(x).strip()]
+    sections: list[str] = []
+    for item in sections_payload:
+        try:
+            sections.append(validate_provider_section_name(str(item)))
+        except ValueError:
+            continue
     if not sections:
         messages.error(request, "No valid orphan rule sections selected for bulk delete.")
         return _redirect_back(form)
@@ -548,6 +604,7 @@ def apply_orphan_bulk_action(request: HttpRequest) -> HttpResponse:
         provider = get_provider(provider_id, require_available=True)
         if provider.provider_id != "openwrt":
             raise RuntimeError("Orphan bulk action is only supported for openwrt provider.")
+        valid_sections = _load_valid_managed_sections(provider)
     except Exception as exc:
         messages.error(request, f"Provider error: {exc}")
         return _redirect_back(form)
@@ -556,6 +613,8 @@ def apply_orphan_bulk_action(request: HttpRequest) -> HttpResponse:
     failed = 0
     for section in sections:
         try:
+            if section not in valid_sections:
+                raise RuntimeError("Section is not a managed AMP-created OpenWrt rule.")
             provider.delete_rule_by_section(section)  # type: ignore[attr-defined]
             ok += 1
         except Exception as exc:
@@ -566,6 +625,7 @@ def apply_orphan_bulk_action(request: HttpRequest) -> HttpResponse:
     return _redirect_back(form)
 
 
+@login_required
 def provider_config(request: HttpRequest) -> HttpResponse:
     metas = list_provider_meta()
     provider_ids = [m.provider_id for m in metas]
@@ -574,7 +634,16 @@ def provider_config(request: HttpRequest) -> HttpResponse:
     if request.method == "POST":
         form_action = str(request.POST.get("form_action", "save")).strip().lower()
         amp_obj, _ = AMPConnectionConfig.objects.get_or_create(config_key="default")
-        amp_obj.url = (request.POST.get("amp__url") or "").strip()
+        raw_amp_url = (request.POST.get("amp__url") or "").strip()
+        try:
+            amp_obj.url = (
+                validate_management_url(raw_amp_url, setting_name="AMP_ALLOWED_HOSTS")
+                if raw_amp_url
+                else ""
+            )
+        except ValueError as exc:
+            messages.error(request, f"AMP URL is invalid: {exc}")
+            return redirect("ports-providers")
         amp_obj.username = (request.POST.get("amp__username") or "").strip()
         raw_amp_password = request.POST.get("amp__password")
         if raw_amp_password is not None and raw_amp_password.strip():
@@ -590,7 +659,16 @@ def provider_config(request: HttpRequest) -> HttpResponse:
             obj.enabled = request.POST.get(f"{provider_id}__enabled") == "on"
 
             if provider_id == "openwrt":
-                obj.openwrt_rpc_url = (request.POST.get("openwrt__rpc_url") or "").strip()
+                raw_openwrt_rpc_url = (request.POST.get("openwrt__rpc_url") or "").strip()
+                try:
+                    obj.openwrt_rpc_url = (
+                        validate_management_url(raw_openwrt_rpc_url, setting_name="OPENWRT_ALLOWED_HOSTS")
+                        if raw_openwrt_rpc_url
+                        else ""
+                    )
+                except ValueError as exc:
+                    messages.error(request, f"OpenWrt RPC URL is invalid: {exc}")
+                    return redirect("ports-providers")
                 obj.openwrt_username = (request.POST.get("openwrt__username") or "").strip()
                 raw_password = request.POST.get("openwrt__password")
                 if raw_password is not None and raw_password.strip():

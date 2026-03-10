@@ -9,6 +9,7 @@ from ampapi.modules import ActionResultError
 from django.db.utils import OperationalError, ProgrammingError
 
 from ports.models import AMPConnectionConfig
+from ports.security import validate_management_url
 
 
 @dataclass(frozen=True)
@@ -53,7 +54,7 @@ class AMPPortCollector:
         try:
             cfg_row = AMPConnectionConfig.objects.filter(config_key="default").first()
             if cfg_row is not None:
-                amp_url = str(cfg_row.url or "").strip()
+                amp_url = validate_management_url(str(cfg_row.url or "").strip(), setting_name="AMP_ALLOWED_HOSTS")
                 amp_user = str(cfg_row.username or "").strip()
                 amp_pass = str(cfg_row.get_password() or "").strip()
                 if amp_url and amp_user and amp_pass:
@@ -275,7 +276,10 @@ async def _test_amp_connection_async(url: str, username: str, password: str) -> 
 
 
 def test_amp_connection(url: str, username: str, password: str) -> tuple[bool, str]:
-    url_value = str(url or "").strip()
+    try:
+        url_value = validate_management_url(str(url or "").strip(), setting_name="AMP_ALLOWED_HOSTS")
+    except ValueError as exc:
+        return False, str(exc)
     user_value = str(username or "").strip()
     pass_value = str(password or "").strip()
     if not url_value or not user_value or not pass_value:
