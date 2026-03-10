@@ -52,6 +52,14 @@
       border: 1px solid #f1b5b0;
     }
     .field { margin-bottom: .85rem; }
+    .checkbox-field {
+      display: flex;
+      align-items: center;
+      gap: .6rem;
+      margin: .2rem 0 1rem;
+      color: var(--muted);
+      font-size: .92rem;
+    }
     label {
       display: block;
       font-size: .92rem;
@@ -70,6 +78,13 @@
       outline: none;
       border-color: #14b8a6;
       box-shadow: 0 0 0 3px rgba(20, 184, 166, 0.15);
+    }
+    .checkbox-field input {
+      width: auto;
+      margin: 0;
+      padding: 0;
+      border: none;
+      box-shadow: none;
     }
     button {
       width: 100%;
@@ -118,6 +133,10 @@
         <label for="id_password">Password</label>
         <input id="id_password" name="password" type="password" autocomplete="current-password" required>
       </div>
+      <label class="checkbox-field" for="id_remember_me">
+        <input id="id_remember_me" name="remember_me" type="checkbox" value="1" checked>
+        Keep me signed in for up to 2 years
+      </label>
       <input type="hidden" name="next" value="{{ next|default:'/' }}">
       <button type="submit">Sign In</button>
     </form>

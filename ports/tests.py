@@ -24,6 +24,36 @@ class SecurityHardeningTests(TestCase):
         response = self.client.get(reverse("login"))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Sign In")
+        self.assertContains(response, "Keep me signed in")
+
+    def test_login_sets_long_session_when_remember_me_enabled(self) -> None:
+        response = self.client.post(
+            reverse("login"),
+            {
+                "username": "tester",
+                "password": "pw",
+                "remember_me": "1",
+                "next": "/",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], "/")
+        self.assertGreaterEqual(self.client.session.get_expiry_age(), 60 * 60 * 24 * 365)
+
+    def test_login_uses_browser_session_when_remember_me_disabled(self) -> None:
+        response = self.client.post(
+            reverse("login"),
+            {
+                "username": "tester",
+                "password": "pw",
+                "next": "/",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response["Location"], "/")
+        self.assertEqual(self.client.session.get_expire_at_browser_close(), True)
 
     def test_index_uses_snapshot_by_default(self) -> None:
         self.client.force_login(self.user)

@@ -67,6 +67,66 @@ You can also open it from your local network using the host LAN IP, for example:
 
 Do **not** expose this service directly to the public internet.
 
+## Run As A Service
+
+This repository includes a `systemd` unit template that runs the app as the current project user and restarts it automatically if it exits.
+
+Files:
+
+- `run-ports-web-service.sh`
+- `arksa-ports-web.service`
+- `install-systemd-service.sh`
+
+Install and start it:
+
+```bash
+sudo ./install-systemd-service.sh
+```
+
+Common service commands:
+
+```bash
+sudo systemctl start arksa-ports-web.service
+sudo systemctl status arksa-ports-web.service
+sudo systemctl restart arksa-ports-web.service
+sudo systemctl stop arksa-ports-web.service
+sudo systemctl enable arksa-ports-web.service
+sudo systemctl disable arksa-ports-web.service
+journalctl -u arksa-ports-web.service -n 100 --no-pager
+journalctl -u arksa-ports-web.service -f
+```
+
+When to restart the service:
+
+```bash
+sudo systemctl restart arksa-ports-web.service
+```
+
+Restart it after:
+
+- changing Python code
+- changing templates
+- changing `.env`
+- reinstalling dependencies
+
+Full service lifecycle example:
+
+```bash
+sudo ./install-systemd-service.sh
+sudo systemctl status arksa-ports-web.service
+sudo systemctl restart arksa-ports-web.service
+sudo systemctl stop arksa-ports-web.service
+sudo systemctl start arksa-ports-web.service
+sudo systemctl disable arksa-ports-web.service
+```
+
+Notes:
+
+- The install script resolves the runtime user automatically from `sudo` or the project directory owner
+- It uses `<project-dir>/.env` as an optional environment file
+- It listens on `0.0.0.0:8001` by default
+- It uses `runserver --noreload` so `systemd` sees a single stable process
+
 ## Configuration Model
 
 - AMP and firewall provider configuration are managed from the UI:

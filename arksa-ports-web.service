@@ -1,0 +1,20 @@
+[Unit]
+Description=ARKSA Ports Web
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__RUN_USER__
+Group=__RUN_GROUP__
+WorkingDirectory=__PROJECT_DIR__
+EnvironmentFile=-__PROJECT_DIR__/.env
+Environment=HOST=0.0.0.0
+Environment=PORT=8001
+ExecStart=__PROJECT_DIR__/run-ports-web-service.sh
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target
