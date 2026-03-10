@@ -2,6 +2,21 @@
 
 Django web UI for discovering AMP instance ports and managing firewall rules through pluggable providers.
 
+## Get The Code
+
+Clone the repository:
+
+```bash
+git clone <repo-url>
+cd arksa-ports-web
+```
+
+Update an existing checkout:
+
+```bash
+git pull --ff-only
+```
+
 ## Intended Deployment
 
 - This service is intended to run on the same host machine where AMP is running.
@@ -18,6 +33,8 @@ Django web UI for discovering AMP instance ports and managing firewall rules thr
 ## Setup
 
 ```bash
+git clone <repo-url>
+cd arksa-ports-web
 ./install.sh
 ```
 
@@ -108,6 +125,15 @@ Restart it after:
 - changing templates
 - changing `.env`
 - reinstalling dependencies
+
+When you pull new code:
+
+```bash
+git pull --ff-only
+source .venv/bin/activate
+python manage.py migrate
+sudo systemctl restart arksa-ports-web.service
+```
 
 Full service lifecycle example:
 
